@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A new Flutter project.">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>testdeploy</title>
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <!--
+    flutter_tesseract_ocr (web) calls the global _extractText(imagePath, mapData).
+    tesseract.js and its worker/core/language files are self-hosted in web/.
+    If the local tesseract.js cannot load, fall back to the CDN.
+  -->
+  <script>
+    window.__tessReady = new Promise(function (resolve, reject) {
+      var local = document.createElement('script');
+      local.src = 'tesseract.min.js';
+      local.onload = function () { resolve(); };
+      local.onerror = function () {
+        var remote = document.createElement('script');
+        remote.src = 'https://unpkg.com/tesseract.js@v4.0.2/dist/tesseract.min.js';
+        remote.onload = function () { resolve(); };
+        remote.onerror = function () {
+          reject(new Error('tesseract.js failed to load'));
+        };
+        document.head.appendChild(remote);
+      };
+      document.head.appendChild(local);
+    });
+
+    (function () {
+      var base = document.baseURI;
+      var LOCAL = {
+        workerPath: new URL('worker.min.js', base).href,
+        corePath: new URL('tesseract-core.wasm.js', base).href,
+        langPath: new URL('lang', base).href,
+      };
+      var REMOTE_BEST = {
+        workerPath: 'https://unpkg.com/tesseract.js@v4.0.2/dist/worker.min.js',
+        corePath: 'https://unpkg.com/tesseract.js-core@v4.0.1/tesseract-core.wasm.js',
+        langPath: 'https://tessdata.projectnaptha.com/4.0.0_best',
+      };
+      var REMOTE_STD = {
+        workerPath: 'https://unpkg.com/tesseract.js@v4.0.2/dist/worker.min.js',
+        corePath: 'https://unpkg.com/tesseract.js-core@v4.0.1/tesseract-core.wasm.js',
+        langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+      };
+      var SOURCES = [LOCAL, REMOTE_BEST, REMOTE_STD];
+
+      // Arabic text + numbers + a bonus for certificate-specific words.
+      function _score(text) {
+        if (!text) return -1;
+        var arabic = (text.match(/[\u0600-\u06FF]/g) || []).length;
+        var digits = (text.match(/\d/g) || []).length;
+        var bonus = 0;
+        var keys = [
+          'ميلاد', 'مولود', 'بيانات', 'اسم', 'قومي', 'قيد', 'محل',
+          'تاريخ', 'جنسي', 'ديان', 'مصر', 'اب', 'ام',
+        ];
+        for (var i = 0; i < keys.length; i++) {
+          if (text.indexOf(keys[i]) !== -1) bonus += 30;
+        }
+        return arabic + digits + bonus;
+      }
+
+      function _keywordCount(text) {
+        if (!text) return 0;
+        var keys = ['ميلاد', 'مولود', 'بيانات', 'اسم', 'قومي', 'قيد', 'محل', 'تاريخ'];
+        var count = 0;
+        for (var i = 0; i < keys.length; i++) {
+          if (text.indexOf(keys[i]) !== -1) count++;
+        }
+        return count;
+      }
+
+      // The certificate text is small in a phone photo, so tesseract misses
+      // most of it. Upscaling 2x with high-quality smoothing, then applying a
+      // grayscale contrast stretch, is what makes the names/labels readable.
+      // (Tested against the failing sample: no upscaling -> almost no fields.)
+      async function _prepImage(url) {
+        var img = new Image();
+        img.src = url;
+        await img.decode();
+        var ow = img.naturalWidth;
+        var oh = img.naturalHeight;
+        var scale = Math.min(2, 2600 / Math.max(ow, oh));
+        if (scale < 1) scale = 1;
+        var w = Math.max(1, Math.round(ow * scale));
+        var h = Math.max(1, Math.round(oh * scale));
+        var canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        var ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        var data = ctx.getImageData(0, 0, w, h);
+        var p = data.data;
+        var hist = new Array(256).fill(0);
+        for (var i = 0; i < p.length; i += 4) {
+          var g = (0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2]) | 0;
+          p[i] = p[i + 1] = p[i + 2] = g;
+          hist[g]++;
+        }
+        var total = w * h;
+        var acc = 0, lo = 0, hi = 255;
+        for (var v = 0; v < 256; v++) {
+          acc += hist[v];
+          if (acc >= total * 0.03) { lo = v; break; }
+        }
+        acc = 0;
+        for (var v2 = 255; v2 >= 0; v2--) {
+          acc += hist[v2];
+          if (acc >= total * 0.03) { hi = v2; break; }
+        }
+        var range = Math.max(hi - lo, 1);
+        for (var j = 0; j < p.length; j += 4) {
+          var g2 = ((p[j] - lo) * 255 / range) | 0;
+          g2 = g2 < 0 ? 0 : g2 > 255 ? 255 : g2;
+          p[j] = p[j + 1] = p[j + 2] = g2;
+        }
+        ctx.putImageData(data, 0, 0);
+        return canvas.toDataURL('image/png');
+      }
+
+      // Group TSV word rows (level 5) into text lines with their vertical
+      // position, so digit-only lines can be merged back in reading order.
+      function _tsvLines(tsv) {
+        var lines = {};
+        var order = [];
+        var rows = (tsv || '').split('\n');
+        for (var i = 0; i < rows.length; i++) {
+          var cols = rows[i].split('\t');
+          if (cols.length < 12 || cols[0] !== '5') continue;
+          var text = (cols[11] || '').trim();
+          if (!text) continue;
+          var key = cols[2] + '-' + cols[3] + '-' + cols[4];
+          var top = parseInt(cols[7], 10);
+          var height = parseInt(cols[8], 10);
+          var line = lines[key];
+          if (!line) {
+            line = lines[key] = { top: top, bottom: top + height, words: [] };
+            order.push(key);
+          }
+          line.top = Math.min(line.top, top);
+          line.bottom = Math.max(line.bottom, top + height);
+          line.words.push({ left: parseInt(cols[6], 10), text: text });
+        }
+        var out = [];
+        for (var j = 0; j < order.length; j++) {
+          var l = lines[order[j]];
+          // Keep the natural TSV word order: it is the logical reading
+          // order. Sorting by x would reverse RTL (Arabic) lines.
+          out.push({
+            top: l.top,
+            bottom: l.bottom,
+            text: l.words.map(function (w) { return w.text; }).join(' '),
+          });
+        }
+        out.sort(function (a, b) { return a.top - b.top; });
+        return out;
+      }
+
+      // A digits-only pass recovers national IDs and serial numbers that the
+      // Arabic model drops on the patterned certificate background.
+      async function _digitLines(worker, image) {
+        try {
+          await worker.setParameters({
+            tessedit_pageseg_mode: '6',
+            tessedit_char_whitelist: '0123456789 ',
+            user_defined_dpi: '300',
+          });
+          var result = await worker.recognize(image, {}, { tsv: true });
+          var lines = _tsvLines(result.data && result.data.tsv);
+          var out = [];
+          for (var i = 0; i < lines.length; i++) {
+            var parts = lines[i].text
+              .replace(/[^0-9]+/g, ' ')
+              .split(' ')
+              .filter(function (w) { return w.length >= 4 && w.length <= 20; });
+            if (parts.length) {
+              out.push({
+                top: lines[i].top,
+                bottom: lines[i].bottom,
+                text: parts.join(' '),
+              });
+            }
+          }
+          return out;
+        } catch (e) {
+          console.warn('Digit pass skipped:', e);
+          return [];
+        }
+      }
+
+      // Merge digit-only lines into the Arabic text by vertical position so
+      // each number lands in its own section (child / father / mother).
+      function _mergeDigitLines(arabicTsv, arabicText, digitLines) {
+        if (!digitLines.length) return arabicText;
+        var arabicLines = _tsvLines(arabicTsv);
+        if (!arabicLines.length) {
+          return arabicText +
+            '\n' + digitLines.map(function (d) { return d.text; }).join('\n');
+        }
+        var merged = [];
+        for (var i = 0; i < arabicLines.length; i++) {
+          merged.push({
+            top: arabicLines[i].top,
+            kind: 'a',
+            text: arabicLines[i].text,
+          });
+        }
+        for (var j = 0; j < digitLines.length; j++) {
+          var d = digitLines[j];
+          var dup = false;
+          for (var k = 0; k < arabicLines.length; k++) {
+            if (arabicLines[k].text.indexOf(d.text) !== -1) { dup = true; break; }
+          }
+          if (!dup) merged.push({ top: d.top + 0.5, kind: 'd', text: d.text });
+        }
+        merged.sort(function (a, b) { return a.top - b.top; });
+        return merged.map(function (l) { return l.text; }).join('\n');
+      }
+
+      // PSM 4 (single column of variable-size text) matches the certificate
+      // layout; PSM 6 reads the background pattern as text.
+      async function _recognize(worker, image, mapData) {
+        await worker.setParameters(Object.assign({
+          tessedit_pageseg_mode: '4',
+          user_defined_dpi: '300',
+          preserve_interword_spaces: '1',
+        }, mapData.args || {}));
+        var result = await worker.recognize(image, {}, { text: true, tsv: true });
+        return {
+          text: ((result.data && result.data.text) || '').trim(),
+          tsv: (result.data && result.data.tsv) || '',
+        };
+      }
+
+      async function _extractText(imagePath, mapData) {
+        try {
+          await window.__tessReady;
+        } catch (e) {
+          return '__OCR_ERROR__: ' + (e && e.message ? e.message : String(e));
+        }
+
+        var lastError = 'unknown error';
+        for (var s = 0; s < SOURCES.length; s++) {
+          var src = SOURCES[s];
+          var worker;
+          try {
+            worker = await Tesseract.createWorker(src);
+            await worker.load();
+            await worker.loadLanguage(mapData.language);
+            await worker.initialize(mapData.language);
+
+            // Always try the original image first: OCR of the raw scan is
+            // consistently better than the old aggressive upscaling.
+            var first = await _recognize(worker, imagePath, mapData);
+            var best = first.text;
+            var bestTsv = first.tsv;
+            var bestImage = imagePath;
+            var bestScore = _score(best);
+
+            if (_keywordCount(best) < 3) {
+              try {
+                var prepared = await _prepImage(imagePath);
+                var second = await _recognize(worker, prepared, mapData);
+                var secondScore = _score(second.text);
+                if (secondScore > bestScore) {
+                  best = second.text;
+                  bestTsv = second.tsv;
+                  bestImage = prepared;
+                  bestScore = secondScore;
+                }
+              } catch (prepError) {
+                console.warn('Image preprocessing skipped:', prepError);
+              }
+            }
+
+            // Digits are read with the English model: it is far more accurate
+            // on numbers than the Arabic model on this patterned background.
+            var digitLines = [];
+            var engWorker;
+            try {
+              engWorker = await Tesseract.createWorker(src);
+              await engWorker.load();
+              await engWorker.loadLanguage('eng');
+              await engWorker.initialize('eng');
+              digitLines = await _digitLines(engWorker, bestImage);
+              await engWorker.terminate();
+            } catch (engError) {
+              console.warn('English digit pass failed, using Arabic model:', engError);
+              try { if (engWorker) await engWorker.terminate(); } catch (_) {}
+              digitLines = await _digitLines(worker, bestImage);
+            }
+            var merged = _mergeDigitLines(bestTsv, best, digitLines);
+
+            await worker.terminate();
+            return merged;
+          } catch (e) {
+            lastError = e && e.message ? e.message : String(e);
+            console.warn('Tesseract failed with', src.corePath, src.langPath, e);
+            try { if (worker) await worker.terminate(); } catch (_) {}
+          }
+        }
+        return '__OCR_ERROR__: ' + lastError;
+      }
+
+      window._extractText = _extractText;
+    })();
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
