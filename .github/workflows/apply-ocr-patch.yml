@@ -1,0 +1,23 @@
+name: Apply OCR patch
+on:
+  push:
+    branches: [ocr-v2]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply patch and fetch OCR assets
+        run: |
+          test -f ocr_v2.patch || exit 0
+          sha256sum ocr_v2.patch
+          git apply --binary ocr_v2.patch
+          rm ocr_v2.patch
+          sh tool/fetch_ocr_assets.sh
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add -A
+          git commit -m "Layout-aware OCR pipeline, correct tesseract core, field parser"
+          git push
