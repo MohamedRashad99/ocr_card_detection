@@ -112,12 +112,12 @@
         var acc = 0, lo = 0, hi = 255;
         for (var v = 0; v < 256; v++) {
           acc += hist[v];
-          if (acc >= total * 0.01) { lo = v; break; }
+          if (acc >= total * 0.03) { lo = v; break; }
         }
         acc = 0;
         for (var v2 = 255; v2 >= 0; v2--) {
           acc += hist[v2];
-          if (acc >= total * 0.01) { hi = v2; break; }
+          if (acc >= total * 0.03) { hi = v2; break; }
         }
         var range = Math.max(hi - lo, 1);
         for (var j = 0; j < p.length; j += 4) {
@@ -129,14 +129,118 @@
         return canvas.toDataURL('image/png');
       }
 
+      // Group TSV word rows (level 5) into text lines with their vertical
+      // position, so digit-only lines can be merged back in reading order.
+      function _tsvLines(tsv) {
+        var lines = {};
+        var order = [];
+        var rows = (tsv || '').split('\n');
+        for (var i = 0; i < rows.length; i++) {
+          var cols = rows[i].split('\t');
+          if (cols.length < 12 || cols[0] !== '5') continue;
+          var text = (cols[11] || '').trim();
+          if (!text) continue;
+          var key = cols[2] + '-' + cols[3] + '-' + cols[4];
+          var top = parseInt(cols[7], 10);
+          var height = parseInt(cols[8], 10);
+          var line = lines[key];
+          if (!line) {
+            line = lines[key] = { top: top, bottom: top + height, words: [] };
+            order.push(key);
+          }
+          line.top = Math.min(line.top, top);
+          line.bottom = Math.max(line.bottom, top + height);
+          line.words.push({ left: parseInt(cols[6], 10), text: text });
+        }
+        var out = [];
+        for (var j = 0; j < order.length; j++) {
+          var l = lines[order[j]];
+          // Keep the natural TSV word order: it is the logical reading
+          // order. Sorting by x would reverse RTL (Arabic) lines.
+          out.push({
+            top: l.top,
+            bottom: l.bottom,
+            text: l.words.map(function (w) { return w.text; }).join(' '),
+          });
+        }
+        out.sort(function (a, b) { return a.top - b.top; });
+        return out;
+      }
+
+      // A digits-only pass recovers national IDs and serial numbers that the
+      // Arabic model drops on the patterned certificate background.
+      async function _digitLines(worker, image) {
+        try {
+          await worker.setParameters({
+            tessedit_pageseg_mode: '6',
+            tessedit_char_whitelist: '0123456789 ',
+            user_defined_dpi: '300',
+          });
+          var result = await worker.recognize(image, {}, { tsv: true });
+          var lines = _tsvLines(result.data && result.data.tsv);
+          var out = [];
+          for (var i = 0; i < lines.length; i++) {
+            var parts = lines[i].text
+              .replace(/[^0-9]+/g, ' ')
+              .split(' ')
+              .filter(function (w) { return w.length >= 4 && w.length <= 20; });
+            if (parts.length) {
+              out.push({
+                top: lines[i].top,
+                bottom: lines[i].bottom,
+                text: parts.join(' '),
+              });
+            }
+          }
+          return out;
+        } catch (e) {
+          console.warn('Digit pass skipped:', e);
+          return [];
+        }
+      }
+
+      // Merge digit-only lines into the Arabic text by vertical position so
+      // each number lands in its own section (child / father / mother).
+      function _mergeDigitLines(arabicTsv, arabicText, digitLines) {
+        if (!digitLines.length) return arabicText;
+        var arabicLines = _tsvLines(arabicTsv);
+        if (!arabicLines.length) {
+          return arabicText +
+            '\n' + digitLines.map(function (d) { return d.text; }).join('\n');
+        }
+        var merged = [];
+        for (var i = 0; i < arabicLines.length; i++) {
+          merged.push({
+            top: arabicLines[i].top,
+            kind: 'a',
+            text: arabicLines[i].text,
+          });
+        }
+        for (var j = 0; j < digitLines.length; j++) {
+          var d = digitLines[j];
+          var dup = false;
+          for (var k = 0; k < arabicLines.length; k++) {
+            if (arabicLines[k].text.indexOf(d.text) !== -1) { dup = true; break; }
+          }
+          if (!dup) merged.push({ top: d.top + 0.5, kind: 'd', text: d.text });
+        }
+        merged.sort(function (a, b) { return a.top - b.top; });
+        return merged.map(function (l) { return l.text; }).join('\n');
+      }
+
+      // PSM 4 (single column of variable-size text) matches the certificate
+      // layout; PSM 6 reads the background pattern as text.
       async function _recognize(worker, image, mapData) {
         await worker.setParameters(Object.assign({
-          tessedit_pageseg_mode: '6',
+          tessedit_pageseg_mode: '4',
           user_defined_dpi: '300',
           preserve_interword_spaces: '1',
         }, mapData.args || {}));
-        var result = await worker.recognize(image, {}, { text: true });
-        return (result.data.text || '').trim();
+        var result = await worker.recognize(image, {}, { text: true, tsv: true });
+        return {
+          text: ((result.data && result.data.text) || '').trim(),
+          tsv: (result.data && result.data.tsv) || '',
+        };
       }
 
       async function _extractText(imagePath, mapData) {
@@ -158,16 +262,21 @@
 
             // Always try the original image first: OCR of the raw scan is
             // consistently better than the old aggressive upscaling.
-            var best = await _recognize(worker, imagePath, mapData);
+            var first = await _recognize(worker, imagePath, mapData);
+            var best = first.text;
+            var bestTsv = first.tsv;
+            var bestImage = imagePath;
             var bestScore = _score(best);
 
             if (_keywordCount(best) < 3) {
               try {
                 var prepared = await _prepImage(imagePath);
                 var second = await _recognize(worker, prepared, mapData);
-                var secondScore = _score(second);
+                var secondScore = _score(second.text);
                 if (secondScore > bestScore) {
-                  best = second;
+                  best = second.text;
+                  bestTsv = second.tsv;
+                  bestImage = prepared;
                   bestScore = secondScore;
                 }
               } catch (prepError) {
@@ -175,11 +284,26 @@
               }
             }
 
-            await worker.terminate();
-            if (mapData.args && mapData.args['tessjs_create_hocr']) {
-              return best;
+            // Digits are read with the English model: it is far more accurate
+            // on numbers than the Arabic model on this patterned background.
+            var digitLines = [];
+            var engWorker;
+            try {
+              engWorker = await Tesseract.createWorker(src);
+              await engWorker.load();
+              await engWorker.loadLanguage('eng');
+              await engWorker.initialize('eng');
+              digitLines = await _digitLines(engWorker, bestImage);
+              await engWorker.terminate();
+            } catch (engError) {
+              console.warn('English digit pass failed, using Arabic model:', engError);
+              try { if (engWorker) await engWorker.terminate(); } catch (_) {}
+              digitLines = await _digitLines(worker, bestImage);
             }
-            return best;
+            var merged = _mergeDigitLines(bestTsv, best, digitLines);
+
+            await worker.terminate();
+            return merged;
           } catch (e) {
             lastError = e && e.message ? e.message : String(e);
             console.warn('Tesseract failed with', src.corePath, src.langPath, e);

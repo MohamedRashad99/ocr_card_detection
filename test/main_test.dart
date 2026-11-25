@@ -44,6 +44,12 @@ void main() {
       expect(result.values['serial'], '5541');
       expect(result.values['registry'], 'بولاق الدكرور');
       expect(result.values['issueDate'], '25/08/2020');
+      expect(result.values['childReligion'], 'مسلم');
+      expect(result.values['childNat'], 'مصر');
+      expect(result.values['fatherReligion'], 'مسلم');
+      expect(result.values['motherReligion'], 'مسلمة');
+      expect(result.values['fatherNid'], '25011111200011');
+      expect(result.values['motherNid'], '28505050200022');
     });
 
     test('parses the noisy text extracted from the attached certificate', () {
@@ -94,15 +100,18 @@ www.itss.gov.eg
       expect(result.values['registry'], 'بولاق الدكرور');
       expect(result.values['issueDate'], '25/08/2020');
 
-      // The only valid NID belongs to a parent, so it may be offered as a
-      // fallback for the NID field, but it must not overwrite the child's
-      // gender/birth date.
-      expect(result.values['nid'], '28022222200066');
+      // Never reuse a parent's number as the child's NID.
+      expect(result.values['nid'], isNull);
       expect(result.values['birthDate'], isNull);
       expect(
         result.notes.any((n) => n.contains('الرقم القومي')),
         isTrue,
       );
+      expect(result.values['childReligion'], 'مسلم');
+      expect(result.values['fatherReligion'], 'مسلم');
+      expect(result.values['motherReligion'], 'مسلمة');
+      expect(result.values['fatherNid'], '28022222200066');
+      expect(result.values['motherNid'], '29522223200066');
     });
 
     test('decodes a valid national ID and rejects an invalid one', () {
@@ -146,5 +155,67 @@ www.itss.gov.eg
       expect(result.values['nid'], '30103141200017');
       expect(result.values['serial'], '9087');
     });
+    test('reads a birth date spelled out in Arabic words', () {
+      const text = '''
+بيانات المولود
+الاسم: احمد محمد سعيد
+النوع: ذكر
+محل الميلاد: الجيزة / بولاق الدكرور
+تاريخ الميلاد: واحد وثلاثون ديسمبر
+عام ألف وتسعمائة وستة وسبعون
+''';
+
+      final result = CertificateParser.parse(text);
+      expect(result.values['birthDate'], '31/12/1976');
+    });
+
+    test('reads a noisy spelled-out birth date with glued tokens', () {
+      const text = '''
+بيانات المولود
+النوع: ذكر
+تاريخ الميلاد: واحده وثلاثون ديسمبر
+عام الق و شسعمانه و سحه و سسعون.
+''';
+
+      final result = CertificateParser.parse(text);
+      expect(result.values['birthDate'], '31/12/1976');
+    });
+
+    test('keeps every certificate field in the field list', () {
+      const expected = <String>{
+        'serial', 'issueDate', 'nid', 'name', 'gender', 'birthDate',
+        'birthPlace', 'fatherName', 'motherName', 'fatherNat', 'motherNat',
+        'insurance', 'registry', 'certDate', 'childReligion', 'childNat',
+        'fatherNid', 'fatherReligion', 'motherNid', 'motherReligion',
+      };
+      expect(kFields.map((f) => f.key).toSet(), expected);
+    });
+  });
+
+  test('browser OCR output with garbled section headers still fills parents', () {
+    const t='''الجسميه :مصر
+محل الميلاد :الجيره / بولاق الذكرور
+تاريح الميلاد :و امه وضلاتونمنزمايم
+عام الف و شسعمانه و سحه و سسعون.
+يللب
+محمد سعيد فتحى
+الديانه؛مسلم 8
+الجسميه! مس 86 88 8 م --2
+28022222200066
+باللا
+سارة فتحى محمد
+الديناته ؛ مسُلمة 1
+29522223200066
+الجنميه:مسر 20-66
+48
+من سنتف :- بولاق الدكر القيم :5057
+| من “(مد ان: 8 بيعه نحرّ اول ناء دممبا زه ا 8
+نس يه ني ولاق الدكرور لطي .7''';
+    final r = CertificateParser.parse(t);
+    expect(r.values['fatherName'], 'محمد سعيد فتحى');
+    expect(r.values['motherName'], 'سارة فتحى محمد');
+    expect(r.values['fatherNid'], '28022222200066');
+    expect(r.values['motherNid'], '29522223200066');
+    expect(r.values['nid'], isNull);
   });
 }

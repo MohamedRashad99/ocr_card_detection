@@ -21,9 +21,16 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'OCR شهادة الميلاد',
+        title: 'ماسح شهادة الميلاد',
         debugShowCheckedModeBanner: false,
-        theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
+        theme: ThemeData(
+          brightness: Brightness.dark,
+          colorSchemeSeed: const Color(0xFF149AD1),
+          useMaterial3: true,
+          fontFamily: 'Almarai',
+          scaffoldBackgroundColor: const Color(0xFF0E1338),
+          cardColor: const Color(0xFF1A2250),
+        ),
         // Let the page scroll with mouse wheel, touch AND mouse drag.
         scrollBehavior: const MaterialScrollBehavior().copyWith(
           dragDevices: PointerDeviceKind.values.toSet(),
@@ -36,29 +43,51 @@ class MyApp extends StatelessWidget {
 
 class FieldDef {
   const FieldDef(this.key, this.label,
-      {this.digits = false, this.optional = false});
+      {this.digits = false, this.optional = false, this.group = 'certificate'});
   final String key;
   final String label;
   final bool digits;
   final bool optional; // not flagged red when empty
+  final String group; // child / father / mother / certificate
 }
 
 const kFields = <FieldDef>[
-  FieldDef('serial', 'المسلسل', digits: true),
-  FieldDef('issueDate', 'تاريخ الإصدار', digits: true),
-  FieldDef('nid', 'الرقم القومي', digits: true),
-  FieldDef('name', 'اسم المولود', optional: true),
-  FieldDef('gender', 'النوع'),
-  FieldDef('birthDate', 'تاريخ الميلاد', digits: true),
-  FieldDef('birthPlace', 'محل الميلاد'),
-  FieldDef('fatherName', 'اسم الأب'),
-  FieldDef('motherName', 'اسم الأم', optional: true),
-  FieldDef('fatherNat', 'جنسية الأب'),
-  FieldDef('motherNat', 'جنسية الأم'),
-  FieldDef('insurance', 'الرقم التأميني', digits: true, optional: true),
-  FieldDef('registry', 'جهة القيد', optional: true),
-  FieldDef('certDate', 'تاريخ الشهادة', digits: true, optional: true),
+  // بيانات المولود
+  FieldDef('nid', 'الرقم القومي', digits: true, group: 'child'),
+  FieldDef('name', 'اسم المولود', optional: true, group: 'child'),
+  FieldDef('gender', 'النوع', group: 'child'),
+  FieldDef('birthDate', 'تاريخ الميلاد', digits: true, group: 'child'),
+  FieldDef('birthPlace', 'محل الميلاد', group: 'child'),
+  FieldDef('childReligion', 'الديانة', optional: true, group: 'child'),
+  FieldDef('childNat', 'الجنسية', optional: true, group: 'child'),
+  // بيانات الأب
+  FieldDef('fatherName', 'اسم الأب', group: 'father'),
+  FieldDef('fatherNid', 'الرقم القومي للأب',
+      digits: true, optional: true, group: 'father'),
+  FieldDef('fatherReligion', 'ديانة الأب', optional: true, group: 'father'),
+  FieldDef('fatherNat', 'جنسية الأب', group: 'father'),
+  // بيانات الأم
+  FieldDef('motherName', 'اسم الأم', optional: true, group: 'mother'),
+  FieldDef('motherNid', 'الرقم القومي للأم',
+      digits: true, optional: true, group: 'mother'),
+  FieldDef('motherReligion', 'ديانة الأم', optional: true, group: 'mother'),
+  FieldDef('motherNat', 'جنسية الأم', group: 'mother'),
+  // بيانات الشهادة
+  FieldDef('serial', 'المسلسل', digits: true, group: 'certificate'),
+  FieldDef('registry', 'جهة القيد', optional: true, group: 'certificate'),
+  FieldDef('issueDate', 'تاريخ الإصدار', digits: true, group: 'certificate'),
+  FieldDef('certDate', 'تاريخ الشهادة',
+      digits: true, optional: true, group: 'certificate'),
+  FieldDef('insurance', 'الرقم التأميني',
+      digits: true, optional: true, group: 'certificate'),
 ];
+
+const kFieldGroups = <String, String>{
+  'child': 'بيانات المولود',
+  'father': 'بيانات الأب',
+  'mother': 'بيانات الأم',
+  'certificate': 'بيانات الشهادة',
+};
 
 // ───────────────────────── Parser ─────────────────────────
 
@@ -313,6 +342,116 @@ class CertificateParser {
     final m = int.tryParse(p[1]) ?? 0;
     final day = int.tryParse(p[0]) ?? 0;
     return y * 10000 + m * 100 + day;
+  }
+
+  // ── spelled-out Arabic dates ──
+  // Egyptian certificates write the birth date in words, e.g.
+  // "واحد وثلاثون ديسمبر" then "عام ألف وتسعمائة وستة وسبعون".
+  // Keys are kept in folded form (the input is folded before lookup).
+
+  static const _numberWords = <String, int>{
+    'واحد': 1, 'واحده': 1, 'احد': 1,
+    'اثنان': 2, 'اثنين': 2, 'ثنتين': 2,
+    'ثلاثه': 3, 'اربعه': 4, 'خمسه': 5, 'سته': 6, 'سبعه': 7,
+    'ثمانيه': 8, 'تسعه': 9, 'عشره': 10, 'عشر': 10,
+    'عشرون': 20, 'عشرين': 20, 'ثلاثون': 30, 'ثلاثين': 30,
+    'اربعون': 40, 'اربعين': 40, 'خمسون': 50, 'خمسين': 50,
+    'ستون': 60, 'ستين': 60, 'سبعون': 70, 'سبعين': 70,
+    'ثمانون': 80, 'ثمانين': 80, 'تسعون': 90, 'تسعين': 90,
+    'مايه': 100, 'مئه': 100, 'ميه': 100, 'ميتان': 200, 'مايتان': 200,
+    'ثلاثمايه': 300, 'اربعمايه': 400, 'خمسمايه': 500, 'ستمايه': 600,
+    'سبعمايه': 700, 'ثمانمايه': 800, 'تسعمايه': 900,
+    'الف': 1000, 'الفان': 2000, 'الفين': 2000,
+  };
+
+  static const _monthWords = <String, int>{
+    'يناير': 1, 'فبراير': 2, 'مارس': 3, 'ابريل': 4, 'مايو': 5,
+    'يونيو': 6, 'يوليو': 7, 'اغسطس': 8, 'سبتمبر': 9, 'اكتوبر': 10,
+    'نوفمبر': 11, 'ديسمبر': 12,
+  };
+
+  // Scaffolding words that fuzzy-match number words (سنه ~ سته) and must
+  // never be read as part of a date.
+  static const _dateScaffold = <String>{
+    'عام', 'سنه', 'يوم', 'شهر', 'تاريخ', 'الميلاد', 'ميلاد', 'في', 'من',
+    'الموافق', 'حرر', 'بتاريخ',
+  };
+
+  static int? _fuzzyLookup(String token, Map<String, int> words) {
+    if (words.containsKey(token)) return words[token];
+    if (_dateScaffold.contains(token)) return null;
+    for (final e in words.entries) {
+      final w = e.key;
+      final max = w.length <= 4 ? 1 : 2;
+      if ((token.length - w.length).abs() > max) continue;
+      if (_levenshtein(token, w) <= max) return e.value;
+    }
+    return null;
+  }
+
+  static int? _numberWord(String token) => _fuzzyLookup(token, _numberWords);
+  static int? _monthWord(String token) => _fuzzyLookup(token, _monthWords);
+
+  /// OCR often glues "و" and two words together ("وضلاتونمنمايم"). Split a
+  /// token when both halves are known number/month words.
+  static List<String> _wordTokens(String text) {
+    final out = <String>[];
+    for (var t in fold(text).split(RegExp(r'\s+'))) {
+      if (t.isEmpty) continue;
+      if (t.startsWith('و') && t.length > 3) t = t.substring(1);
+      if (_numberWord(t) != null || _monthWord(t) != null) {
+        out.add(t);
+        continue;
+      }
+      var split = false;
+      for (var i = 2; i <= t.length - 3 && !split; i++) {
+        var a = t.substring(0, i);
+        var b = t.substring(i);
+        if (a.startsWith('و') && a.length > 3) a = a.substring(1);
+        if (b.startsWith('و') && b.length > 3) b = b.substring(1);
+        if ((_numberWord(a) != null || _monthWord(a) != null) &&
+            (_numberWord(b) != null || _monthWord(b) != null)) {
+          out.add(a);
+          out.add(b);
+          split = true;
+        }
+      }
+      if (!split) out.add(t);
+    }
+    return out;
+  }
+
+  /// Reads a fully spelled-out date ("واحد وثلاثون ديسمبر عام الف وتسعمائة
+  /// وستة وسبعون"): day words come before the month, year words after it.
+  /// Returns null when any part is missing or implausible.
+  static String? _spelledDateFromText(String text) {
+    final tokens = _wordTokens(normalize(text));
+    int? month;
+    var monthIdx = -1;
+    for (var i = 0; i < tokens.length; i++) {
+      final m = _monthWord(tokens[i]);
+      if (m != null) {
+        month = m;
+        monthIdx = i;
+        break;
+      }
+    }
+    if (month == null) return null;
+    var day = 0;
+    for (var i = 0; i < monthIdx; i++) {
+      final v = _numberWord(tokens[i]);
+      if (v != null && v <= 30) day += v;
+    }
+    var year = 0;
+    var hasThousand = false;
+    for (var i = monthIdx + 1; i < tokens.length; i++) {
+      final v = _numberWord(tokens[i]);
+      if (v == null) continue;
+      if (v >= 1000) hasThousand = true;
+      year += v;
+    }
+    if (!hasThousand || day < 1 || day > 31) return null;
+    return _fmt(year, month, day);
   }
 
   // ── national ID ──
@@ -616,11 +755,12 @@ class CertificateParser {
 
   static String? _cleanReligion(String s) {
     final f = fold(arabicOnly(s));
+    final female = _religionIsFemale(s) == true;
     if (f.contains('مسل') || f.contains('اسلام') || f.contains('معالم')) {
-      return 'مسلم';
+      return female ? 'مسلمة' : 'مسلم';
     }
-    if (f.contains('مسيح')) return 'مسيحي';
-    if (f.contains('يهود')) return 'يهودي';
+    if (f.contains('مسيح')) return female ? 'مسيحية' : 'مسيحي';
+    if (f.contains('يهود')) return female ? 'يهودية' : 'يهودي';
     return null;
   }
 
@@ -708,7 +848,8 @@ class CertificateParser {
       }
       if (line.labels.isNotEmpty) continue;
       final name = _cleanName(line.text);
-      if (name != null) {
+      if (name != null &&
+          !RegExp(r'جسمي|جنمي|جنسي|جثمي|ديان|ديني|الميلاد|القيد').hasMatch(name)) {
         final n = name.split(RegExp(r'\s+')).length;
         final score = n >= 2 && n <= 4 ? 10 : (n == 1 ? 5 : 1);
         out.add(_NameCandidate(name, i, score));
@@ -806,7 +947,10 @@ class CertificateParser {
       if (from < 0) from = 0;
       final candidates = <int>[
         for (final n in names)
-          if (n.line >= from && (motherIdx < 0 || n.line < motherIdx)) n.line,
+          if (n.score >= 10 &&
+              n.line >= from &&
+              (motherIdx < 0 || n.line < motherIdx))
+            n.line,
         for (final n in nids)
           if (n.line >= from && (motherIdx < 0 || n.line < motherIdx)) n.line,
       ]..sort();
@@ -819,7 +963,8 @@ class CertificateParser {
 
     int? motherStart = motherIdx >= 0 ? motherIdx : null;
     if (motherStart == null && fatherStart != null) {
-      final after = names.where((n) => n.line > fatherStart!).toList();
+      final after =
+          names.where((n) => n.score >= 10 && n.line > fatherStart!).toList();
       if (after.isNotEmpty) motherStart = after.first.line;
     }
 
@@ -895,13 +1040,27 @@ class CertificateParser {
     final hasFatherSection = fatherIdx >= 0;
     final hasMotherSection = motherIdx >= 0;
 
+    // Positional fallback: when a section header is missing or too mangled,
+    // the parent's name is the first clean name line inside their block.
+    String? nameInSection(_Section s) {
+      final c = names.where((n) => infos[n.line].section == s).toList()
+        ..sort((a, b) {
+          final cmp = b.score.compareTo(a.score);
+          return cmp != 0 ? cmp : a.line.compareTo(b.line);
+        });
+      return c.isEmpty ? null : c.first.name;
+    }
+
     final fatherName = _nameNearSection(infos, _Section.father) ??
+        nameInSection(_Section.father) ??
         pickValue('fatherName',
             section: _Section.father, fallback: !hasFatherSection);
     final motherName = _nameNearSection(infos, _Section.mother) ??
+        nameInSection(_Section.mother) ??
         pickValue('motherName',
             section: _Section.mother, fallback: !hasMotherSection);
     final childName = _nameNearSection(infos, _Section.child) ??
+        nameInSection(_Section.child) ??
         pickValue('name', section: _Section.child, fallback: !hasChildSection);
 
     final genderValue = pickValue('gender',
@@ -918,17 +1077,14 @@ class CertificateParser {
     } else {
       final childNids =
           nids.where((n) => infos[n.line].section == _Section.child).toList();
-      final chosen = childNids.isNotEmpty
-          ? childNids.first
-          : (nids.isNotEmpty ? nids.first : null);
+      final chosen = childNids.isNotEmpty ? childNids.first : null;
       if (chosen != null) {
         nid = chosen.id;
         nidSection = infos[chosen.line].section;
-        if (nidSection != _Section.child) {
-          notes.add(
-            'لم يُعثر على الرقم القومي للمولود، فتم استخدام أول رقم قومي صالح في الشهادة. راجع الحقل يدويًا.',
-          );
-        }
+      } else if (nids.isNotEmpty) {
+        notes.add(
+          'لم يُعثر على الرقم القومي للمولود. أدخله يدويًا (لن يُستخدم رقم الأب أو الأم).',
+        );
       }
     }
 
@@ -936,9 +1092,22 @@ class CertificateParser {
     final childNid =
         nidSection == _Section.child && nid != null ? decodeNid(nid) : null;
 
-    final birthDate = pickValue('birthDate',
-            section: _Section.child, fallback: !hasChildSection) ??
-        childNid?.birthDate;
+    var birthDate = pickValue('birthDate',
+        section: _Section.child, fallback: !hasChildSection);
+    if (birthDate == null) {
+      // The birth date is often spelled out in words, with the year on the
+      // next line or two ("عام ألف وتسعمائة وستة وسبعون").
+      for (var i = 0; i < infos.length; i++) {
+        final line = infos[i];
+        if (!line.labels.any((m) => m.key == 'birthDate')) continue;
+        final buf = StringBuffer(line.text);
+        if (i + 1 < infos.length) buf.write(' ${infos[i + 1].text}');
+        if (i + 2 < infos.length) buf.write(' ${infos[i + 2].text}');
+        birthDate = _spelledDateFromText(buf.toString());
+        if (birthDate != null) break;
+      }
+    }
+    birthDate ??= childNid?.birthDate;
     final gender = genderValue ?? childNid?.gender;
     final birthPlace = pickValue('birthPlace',
             section: _Section.child, fallback: !hasChildSection) ??
@@ -952,6 +1121,37 @@ class CertificateParser {
             section: _Section.mother, fallback: !hasMotherSection) ??
         pickValue('nationality',
             section: _Section.mother, fallback: !hasMotherSection);
+
+    final childReligion = pickValue('religion',
+        section: _Section.child, fallback: !hasChildSection);
+    final fatherReligion =
+        pickValue('religion', section: _Section.father, fallback: false);
+    final motherReligion =
+        pickValue('religion', section: _Section.mother, fallback: false);
+    final childNat =
+        pickValue('nationality', section: _Section.child, fallback: false);
+
+    String? nidInSection(_Section s) {
+      for (final n in nids) {
+        if (infos[n.line].section == s) return n.id;
+      }
+      return null;
+    }
+
+    var fatherNid = nidInSection(_Section.father);
+    var motherNid = nidInSection(_Section.mother);
+    // Certificates list child, father, mother in that order. When the section
+    // headers are too noisy to place the numbers, trust the document order of
+    // the two parent numbers instead.
+    final parentIds = <String>[];
+    for (final n in nids) {
+      if (infos[n.line].section == _Section.child) continue;
+      if (!parentIds.contains(n.id)) parentIds.add(n.id);
+    }
+    if (parentIds.length == 2) {
+      fatherNid = parentIds[0];
+      motherNid = parentIds[1];
+    }
 
     final serial = pickValue('serial');
     final insurance = pickValue('insurance');
@@ -999,6 +1199,12 @@ class CertificateParser {
     put('insurance', insurance);
     put('registry', registry);
     put('certDate', certDate);
+    put('childReligion', childReligion);
+    put('childNat', childNat);
+    put('fatherNid', fatherNid);
+    put('fatherReligion', fatherReligion);
+    put('motherNid', motherNid);
+    put('motherReligion', motherReligion);
 
     final foldedText = fold(text);
     if (!foldedText.contains('ميلاد') &&
@@ -1095,6 +1301,15 @@ class OcrFormPage extends StatefulWidget {
 }
 
 class _OcrFormPageState extends State<OcrFormPage> {
+  static const _navy = Color(0xFF141A59);
+  static const _accent = Color(0xFF149AD1);
+  static const _groupIcons = <String, IconData>{
+    'child': Icons.child_care_rounded,
+    'father': Icons.man_rounded,
+    'mother': Icons.woman_rounded,
+    'certificate': Icons.verified_rounded,
+  };
+
   final Map<String, TextEditingController> _controllers = {
     for (final f in kFields) f.key: TextEditingController(),
   };
@@ -1114,6 +1329,9 @@ class _OcrFormPageState extends State<OcrFormPage> {
     super.dispose();
   }
 
+  int get _filledCount =>
+      kFields.where((f) => _controllers[f.key]!.text.trim().isNotEmpty).length;
+
   Future<void> _pickAndRead() async {
     if (_busy) return;
     setState(() {
@@ -1131,7 +1349,10 @@ class _OcrFormPageState extends State<OcrFormPage> {
         withData: true,
         type: FileType.image,
       );
-      if (result == null || result.files.isEmpty) return;
+      if (result == null || result.files.isEmpty) {
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
 
       final file = result.files.first;
       final bytes = file.bytes ?? await file.xFile.readAsBytes();
@@ -1173,7 +1394,7 @@ class _OcrFormPageState extends State<OcrFormPage> {
         _notes = parsed.notes;
         _status = parsed.values.isEmpty
             ? 'لم يتم التعرف على بيانات. راجع النص المستخرج.'
-            : 'تم استخراج البيانات. راجعها قبل الحفظ.';
+            : 'تم استخراج البيانات. راجعها قبل الاعتماد عليها.';
         for (final f in kFields) {
           _controllers[f.key]!.text = parsed.values[f.key] ?? '';
         }
@@ -1204,179 +1425,409 @@ class _OcrFormPageState extends State<OcrFormPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final filled = _filledCount;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('قراءة شهادة الميلاد (OCR)'),
-        centerTitle: true,
-      ),
+      backgroundColor: const Color(0xFF0E1338),
       body: Directionality(
         textDirection: TextDirection.rtl,
         child: SafeArea(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 1000),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Text(
-                              'ارفع صورة شهادة الميلاد المصرية، وسيتم استخراج البيانات تلقائيًا.',
-                              style: theme.textTheme.titleMedium,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildHeader(filled),
+                Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1000),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 20, 16, 32),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _buildUploadCard(theme),
+                          if (_error != null) ...[
+                            const SizedBox(height: 12),
+                            _MessageBox(
+                              icon: Icons.error_outline,
+                              color: theme.colorScheme.errorContainer,
+                              textColor: theme.colorScheme.onErrorContainer,
+                              title: 'تعذر قراءة الشهادة',
+                              lines: [_error!],
                             ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'للحصول على أفضل نتيجة: صورة واضحة، مضيئة، وغير مائلة.',
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: theme.colorScheme.onSurfaceVariant,
-                              ),
+                          ],
+                          if (_notes.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            _MessageBox(
+                              icon: Icons.info_outline,
+                              color: theme.colorScheme.secondaryContainer,
+                              textColor: theme.colorScheme.onSecondaryContainer,
+                              title: 'ملاحظات',
+                              lines: _notes,
                             ),
+                          ],
+                          const SizedBox(height: 16),
+                          for (final group in kFieldGroups.keys) ...[
+                            _buildGroupCard(theme, group),
                             const SizedBox(height: 16),
-                            Wrap(
-                              spacing: 12,
-                              runSpacing: 12,
-                              children: [
-                                ElevatedButton.icon(
-                                  onPressed: _busy ? null : _pickAndRead,
-                                  icon: const Icon(Icons.upload_file),
-                                  label: Text(
-                                    _busy
-                                        ? 'جارٍ قراءة الصورة…'
-                                        : 'اختر صورة الشهادة',
-                                  ),
-                                ),
-                                OutlinedButton.icon(
-                                  onPressed: _busy ? null : _clear,
-                                  icon: const Icon(Icons.clear_all),
-                                  label: const Text('مسح الحقول'),
-                                ),
-                              ],
-                            ),
-                            if (_busy) ...[
-                              const SizedBox(height: 16),
-                              const LinearProgressIndicator(),
-                              const SizedBox(height: 8),
-                              Text(
-                                'يتم تشغيل OCR على الصورة… قد يستغرق ذلك بعض الوقت.',
-                                style: theme.textTheme.bodySmall,
-                              ),
-                            ],
-                            if (_imageName != null) ...[
-                              const SizedBox(height: 12),
-                              Text(
-                                'الصورة: $_imageName',
-                                style: theme.textTheme.bodySmall,
-                              ),
-                            ],
-                            if (_status != null) ...[
-                              const SizedBox(height: 12),
-                              Text(
-                                _status!,
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: theme.colorScheme.primary,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
                           ],
-                        ),
+                          if (_rawText.isNotEmpty) _buildRawCard(theme),
+                        ],
                       ),
                     ),
-                    if (_error != null) ...[
-                      const SizedBox(height: 12),
-                      _MessageBox(
-                        icon: Icons.error_outline,
-                        color: theme.colorScheme.errorContainer,
-                        textColor: theme.colorScheme.onErrorContainer,
-                        title: 'تعذر قراءة الشهادة',
-                        lines: [_error!],
-                      ),
-                    ],
-                    if (_notes.isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      _MessageBox(
-                        icon: Icons.info_outline,
-                        color: theme.colorScheme.secondaryContainer,
-                        textColor: theme.colorScheme.onSecondaryContainer,
-                        title: 'ملاحظات',
-                        lines: _notes,
-                      ),
-                    ],
-                    const SizedBox(height: 16),
-                    LayoutBuilder(
-                      builder: (context, constraints) {
-                        final columns = constraints.maxWidth >= 720 ? 2 : 1;
-                        return GridView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: kFields.length,
-                          gridDelegate:
-                              SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: columns,
-                            crossAxisSpacing: 12,
-                            mainAxisSpacing: 12,
-                            mainAxisExtent: 84,
-                          ),
-                          itemBuilder: (context, index) {
-                            final field = kFields[index];
-                            return TextField(
-                              controller: _controllers[field.key],
-                              textDirection: TextDirection.rtl,
-                              keyboardType: field.digits
-                                  ? TextInputType.number
-                                  : TextInputType.text,
-                              inputFormatters: field.digits
-                                  ? [
-                                      FilteringTextInputFormatter.allow(
-                                        RegExp(r'[0-9٠-٩/.\-]'),
-                                      ),
-                                    ]
-                                  : null,
-                              decoration: InputDecoration(
-                                labelText: field.label,
-                                border: const OutlineInputBorder(),
-                                prefixIcon: Icon(
-                                  field.optional
-                                      ? Icons.edit_note
-                                      : Icons.check_circle_outline,
-                                  size: 20,
-                                ),
-                              ),
-                            );
-                          },
-                        );
-                      },
-                    ),
-                    if (_rawText.isNotEmpty) ...[
-                      const SizedBox(height: 16),
-                      Card(
-                        child: ExpansionTile(
-                          title: const Text('النص المستخرج من الصورة (OCR)'),
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: SelectableText(
-                                _rawText,
-                                textDirection: TextDirection.rtl,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 24),
-                  ],
+                  ),
                 ),
-              ),
+              ],
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildHeader(int filled) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [_navy, Color(0xFF0E1338)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+        borderRadius: BorderRadius.vertical(bottom: Radius.circular(32)),
+      ),
+      padding: const EdgeInsets.fromLTRB(24, 32, 24, 28),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1000),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.asset(
+                      'assets/solix_logo.jpg',
+                      height: 56,
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'ماسح شهادة الميلاد المصرية',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          'استخراج تلقائي لكل بيانات الشهادة من الصورة',
+                          style:
+                              TextStyle(color: Colors.white70, fontSize: 14),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: LinearProgressIndicator(
+                        value: filled / kFields.length,
+                        minHeight: 8,
+                        backgroundColor: Colors.white.withValues(alpha: 0.15),
+                        valueColor:
+                            const AlwaysStoppedAnimation<Color>(_accent),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    '$filled / ${kFields.length} حقل',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUploadCard(ThemeData theme) {
+    return Card(
+      elevation: 0,
+      color: const Color(0xFF18206A),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'ارفع صورة شهادة الميلاد المصرية، وسيتم استخراج البيانات تلقائيًا.',
+              style: theme.textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'للحصول على أفضل نتيجة: صورة واضحة، مضيئة، وغير مائلة.',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                FilledButton.icon(
+                  onPressed: _busy ? null : _pickAndRead,
+                  icon: const Icon(Icons.upload_file_rounded),
+                  label: Text(
+                    _busy ? 'جارٍ قراءة الصورة…' : 'اختر صورة الشهادة',
+                  ),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 16,
+                    ),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _busy ? null : _clear,
+                  icon: const Icon(Icons.clear_all_rounded),
+                  label: const Text('مسح الحقول'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 16,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (_busy) ...[
+              const SizedBox(height: 16),
+              const LinearProgressIndicator(),
+              const SizedBox(height: 8),
+              Text(
+                'يتم تشغيل OCR على الصورة… قد يستغرق ذلك بعض الوقت.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
+            if (_imageName != null) ...[
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Icon(
+                    Icons.image_rounded,
+                    size: 18,
+                    color: theme.colorScheme.primary,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _imageName!,
+                      style: theme.textTheme.bodySmall,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            if (_status != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _status!,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGroupCard(ThemeData theme, String group) {
+    final fields = kFields.where((f) => f.group == group).toList();
+    final filled = fields
+        .where((f) => _controllers[f.key]!.text.trim().isNotEmpty)
+        .length;
+    final complete = filled == fields.length;
+    return Card(
+      elevation: 0,
+      color: const Color(0xFF18206A),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                CircleAvatar(
+                  radius: 18,
+                  backgroundColor: theme.colorScheme.primaryContainer,
+                  child: Icon(
+                    _groupIcons[group],
+                    size: 20,
+                    color: theme.colorScheme.onPrimaryContainer,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    kFieldGroups[group]!,
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: complete
+                        ? Colors.green.withValues(alpha: 0.12)
+                        : theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    '$filled/${fields.length}',
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: complete ? Colors.green.shade700 : null,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final columns = constraints.maxWidth >= 640 ? 2 : 1;
+                return GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: fields.length,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: columns,
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                    mainAxisExtent: 62,
+                  ),
+                  itemBuilder: (context, index) =>
+                      _buildField(theme, fields[index]),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildField(ThemeData theme, FieldDef field) {
+    final controller = _controllers[field.key]!;
+    final isEmpty = controller.text.trim().isEmpty;
+    final needsAttention = _status != null && isEmpty && !field.optional;
+    return TextField(
+      controller: controller,
+      textDirection: TextDirection.rtl,
+      onChanged: (_) => setState(() {}),
+      keyboardType: field.digits ? TextInputType.number : TextInputType.text,
+      inputFormatters: field.digits
+          ? [
+              FilteringTextInputFormatter.allow(
+                RegExp(r'[0-9٠-٩/.\-]'),
+              ),
+            ]
+          : null,
+      decoration: InputDecoration(
+        labelText: field.label,
+        labelStyle: const TextStyle(color: Color(0xFF8FD3F4)),
+        filled: true,
+        fillColor: isEmpty ? const Color(0xFF232C86) : const Color(0xFF0F4C86),
+        isDense: true,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFF149AD1)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFF5CC8F5), width: 2),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(
+            color: needsAttention
+                ? theme.colorScheme.error
+                : (isEmpty ? const Color(0xFF3F4BB0) : const Color(0xFF149AD1)),
+          ),
+        ),
+        suffixIcon: isEmpty
+            ? (field.optional
+                ? const Icon(Icons.edit_note_rounded, size: 20)
+                : Icon(
+                    Icons.error_outline_rounded,
+                    size: 20,
+                    color: needsAttention ? theme.colorScheme.error : null,
+                  ))
+            : Icon(
+                Icons.check_circle_rounded,
+                size: 20,
+                color: Colors.green.shade600,
+              ),
+      ),
+    );
+  }
+
+  Widget _buildRawCard(ThemeData theme) {
+    return Card(
+      elevation: 0,
+      color: const Color(0xFF18206A),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(color: theme.colorScheme.outlineVariant),
+      ),
+      child: ExpansionTile(
+        leading: const Icon(Icons.text_snippet_rounded),
+        title: const Text('النص المستخرج من الصورة (OCR)'),
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: SelectableText(
+              _rawText,
+              textDirection: TextDirection.rtl,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1403,7 +1854,7 @@ class _MessageBox extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: color,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
