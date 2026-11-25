@@ -14,6 +14,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tesseract_ocr/flutter_tesseract_ocr.dart';
 
+import 'ocr/layout_parser.dart';
+
 void main() => runApp(const MyApp());
 
 class MyApp extends StatelessWidget {
@@ -1225,6 +1227,27 @@ class CertificateParser {
   }
 }
 
+/// Parses the output of the browser OCR. When it carries text positions
+/// (JSON), the layout-aware parser is applied first and the plain-text parser
+/// fills whatever it could not find.
+ParseResult parseOcrOutput(String raw) {
+  final segs = decodeSegments(raw);
+  if (segs == null) return CertificateParser.parse(raw);
+  final plain = CertificateParser.parse(segmentsToText(segs));
+  final layout = parseLayout(segs);
+  final values = Map<String, String>.of(plain.values);
+  layout.forEach((k, v) {
+    if (v.trim().isNotEmpty) values[k] = v;
+  });
+  final notes = <String>[
+    for (final n in plain.notes)
+      if (!kFields.any((f) =>
+          (values[f.key] ?? '').isNotEmpty && n.contains('«${f.label}»')))
+        n,
+  ];
+  return ParseResult(values, notes);
+}
+
 // ───────────────────────── Parser helpers ─────────────────────────
 
 class _Token {
@@ -1386,11 +1409,13 @@ class _OcrFormPageState extends State<OcrFormPage> {
         );
       }
 
-      final parsed = CertificateParser.parse(text);
+      final parsed = parseOcrOutput(text);
       if (!mounted) return;
       setState(() {
         _imageName = file.name;
-        _rawText = text;
+        _rawText = decodeSegments(text) != null
+            ? segmentsToText(decodeSegments(text)!)
+            : text;
         _notes = parsed.notes;
         _status = parsed.values.isEmpty
             ? 'لم يتم التعرف على بيانات. راجع النص المستخرج.'
