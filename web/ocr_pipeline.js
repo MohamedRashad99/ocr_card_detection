@@ -280,6 +280,10 @@
 
   function arabicCount(t) { return (t.match(/[\u0600-\u06FF]/g) || []).length; }
 
+  function latinCount(t) { return (t.match(/[A-Za-z]/g) || []).length; }
+
+  function digitCount(t) { return (t.match(/[0-9]/g) || []).length; }
+
   function lev(a, b) {
     var prev = [], i, j;
     for (j = 0; j <= b.length; j++) prev.push(j);
@@ -369,7 +373,59 @@
         if (wordCount(r3.text) > wordCount(r.text) && wordCount(r3.text) <= wb.length && (sameLetters || r3.conf >= r.conf - 15)) r = r3;
       }
     }
+    // Ambiguous or low-confidence segment (short word, or the Arabic model
+    // hallucinating on Latin text): also read it with the English model and
+    // keep whichever read carries more confident real characters.
+    if (arabicCount(r.text) < 4 || r.conf < 70) {
+      await eng.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '', user_defined_dpi: '300' });
+      var e = await eng.recognize(plainCanvas);
+      var etext = ((e.data && e.data.text) || '').trim();
+      var econf = (e.data && e.data.confidence) || 0;
+      var engQ = (latinCount(etext) + digitCount(etext)) * (econf / 100);
+      var araQ = arabicCount(r.text) * (r.conf / 100);
+      if (etext && engQ >= 3 && engQ > araQ * 1.5) {
+        return { t: etext, conf: econf };
+      }
+    }
     return { t: r.text, conf: r.conf };
+  }
+
+  function invert(canvas) {
+    var c = document.createElement('canvas');
+    c.width = canvas.width; c.height = canvas.height;
+    var ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(canvas, 0, 0);
+    var d = ctx.getImageData(0, 0, c.width, c.height);
+    var px = d.data;
+    for (var i = 0; i < px.length; i += 4) {
+      px[i] = 255 - px[i];
+      px[i + 1] = 255 - px[i + 1];
+      px[i + 2] = 255 - px[i + 2];
+    }
+    ctx.putImageData(d, 0, 0);
+    return c;
+  }
+
+  function textScore(out) {
+    var s = 0;
+    for (var i = 0; i < out.length; i++) {
+      if (out[i].conf >= 45) s += out[i].t.length;
+    }
+    return s;
+  }
+
+  async function readCanvas(araWorker, engWorker, canvas) {
+    var m = inkMask(canvas);
+    var segs = segment(m);
+    var out = [], row = -1, lastTop = -1;
+    for (var i = 0; i < segs.length; i++) {
+      var rd = await readSegment(araWorker, engWorker, m, segs[i]);
+      if (!rd.t) continue;
+      if (segs[i][0] !== lastTop) { row++; lastTop = segs[i][0]; }
+      out.push({ t: rd.t, conf: Math.round(rd.conf), digits: !!rd.digits, row: row,
+        top: segs[i][0], bottom: segs[i][1], left: segs[i][2], right: segs[i][3] });
+    }
+    return { out: out, w: m.w, h: m.h };
   }
 
   async function runWith(src, imageUrl, mapData) {
@@ -383,18 +439,15 @@
       await engWorker.initialize('eng');
       var img = await loadImage(imageUrl);
       var canvas = toCanvas(img);
-      var m = inkMask(canvas);
-      var segs = segment(m);
-      var out = [], row = -1, lastTop = -1;
-      for (var i = 0; i < segs.length; i++) {
-        var rd = await readSegment(araWorker, engWorker, m, segs[i]);
-        if (!rd.t) continue;
-        if (segs[i][0] !== lastTop) { row++; lastTop = segs[i][0]; }
-        out.push({ t: rd.t, conf: Math.round(rd.conf), digits: !!rd.digits, row: row,
-          top: segs[i][0], bottom: segs[i][1], left: segs[i][2], right: segs[i][3] });
+      var result = await readCanvas(araWorker, engWorker, canvas);
+      if (textScore(result.out) < 20) {
+        // Little or no reliable dark-on-light text: try the inverted image
+        // (light text on a dark background) and keep the better pass.
+        var inv = await readCanvas(araWorker, engWorker, invert(canvas));
+        if (textScore(inv.out) > textScore(result.out)) result = inv;
       }
-      if (!out.length) return '';
-      return JSON.stringify({ v: 2, w: m.w, h: m.h, segs: out });
+      if (!result.out.length) return '';
+      return JSON.stringify({ v: 2, w: result.w, h: result.h, segs: result.out });
     } finally {
       try { if (araWorker) await araWorker.terminate(); } catch (_) {}
       try { if (engWorker) await engWorker.terminate(); } catch (_) {}

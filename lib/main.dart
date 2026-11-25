@@ -1416,10 +1416,10 @@ class _OcrFormPageState extends State<OcrFormPage> {
         _rawText = decodeSegments(text) != null
             ? segmentsToText(decodeSegments(text)!)
             : text;
-        _notes = parsed.notes;
+        _notes = parsed.values.isEmpty ? const <String>[] : parsed.notes;
         _status = parsed.values.isEmpty
-            ? 'لم يتم التعرف على بيانات. راجع النص المستخرج.'
-            : 'تم استخراج البيانات. راجعها قبل الاعتماد عليها.';
+            ? 'تم استخراج النص من الصورة. راجعه قبل الاعتماد عليه.'
+            : 'تم استخراج بيانات الشهادة. راجع الحقول قبل الاعتماد عليها.';
         for (final f in kFields) {
           _controllers[f.key]!.text = parsed.values[f.key] ?? '';
         }
@@ -1476,7 +1476,7 @@ class _OcrFormPageState extends State<OcrFormPage> {
                               icon: Icons.error_outline,
                               color: theme.colorScheme.errorContainer,
                               textColor: theme.colorScheme.onErrorContainer,
-                              title: 'تعذر قراءة الشهادة',
+                              title: 'تعذر قراءة الصورة',
                               lines: [_error!],
                             ),
                           ],
@@ -1490,12 +1490,17 @@ class _OcrFormPageState extends State<OcrFormPage> {
                               lines: _notes,
                             ),
                           ],
-                          const SizedBox(height: 16),
-                          for (final group in kFieldGroups.keys) ...[
-                            _buildGroupCard(theme, group),
+                          if (_rawText.isNotEmpty) ...[
                             const SizedBox(height: 16),
+                            _buildRawCard(theme),
                           ],
-                          if (_rawText.isNotEmpty) _buildRawCard(theme),
+                          if (_imageName == null || filled > 0) ...[
+                            const SizedBox(height: 16),
+                            for (final group in kFieldGroups.keys) ...[
+                              _buildGroupCard(theme, group),
+                              const SizedBox(height: 16),
+                            ],
+                          ],
                         ],
                       ),
                     ),
@@ -1542,7 +1547,7 @@ class _OcrFormPageState extends State<OcrFormPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'ماسح شهادة الميلاد المصرية',
+                          'ماسح النصوص والمستندات',
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 24,
@@ -1551,7 +1556,7 @@ class _OcrFormPageState extends State<OcrFormPage> {
                         ),
                         SizedBox(height: 4),
                         Text(
-                          'استخراج تلقائي لكل بيانات الشهادة من الصورة',
+                          'استخراج النص من أي صورة، وتعبئة تلقائية لحقول شهادة الميلاد',
                           style:
                               TextStyle(color: Colors.white70, fontSize: 14),
                         ),
@@ -1560,31 +1565,34 @@ class _OcrFormPageState extends State<OcrFormPage> {
                   ),
                 ],
               ),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: LinearProgressIndicator(
-                        value: filled / kFields.length,
-                        minHeight: 8,
-                        backgroundColor: Colors.white.withValues(alpha: 0.15),
-                        valueColor:
-                            const AlwaysStoppedAnimation<Color>(_accent),
+              if (_imageName == null || _filledCount > 0) ...[
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: LinearProgressIndicator(
+                          value: filled / kFields.length,
+                          minHeight: 8,
+                          backgroundColor:
+                              Colors.white.withValues(alpha: 0.15),
+                          valueColor:
+                              const AlwaysStoppedAnimation<Color>(_accent),
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    '$filled / ${kFields.length} حقل',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
+                    const SizedBox(width: 12),
+                    Text(
+                      '$filled / ${kFields.length} حقل',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),
@@ -1606,7 +1614,7 @@ class _OcrFormPageState extends State<OcrFormPage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              'ارفع صورة شهادة الميلاد المصرية، وسيتم استخراج البيانات تلقائيًا.',
+              'ارفع أي صورة فيها نص (شهادة، بطاقة، مستند)، وسيتم استخراج النص منها تلقائيًا.',
               style: theme.textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.bold),
             ),
@@ -1626,7 +1634,7 @@ class _OcrFormPageState extends State<OcrFormPage> {
                   onPressed: _busy ? null : _pickAndRead,
                   icon: const Icon(Icons.upload_file_rounded),
                   label: Text(
-                    _busy ? 'جارٍ قراءة الصورة…' : 'اختر صورة الشهادة',
+                    _busy ? 'جارٍ قراءة الصورة…' : 'اختر صورة',
                   ),
                   style: FilledButton.styleFrom(
                     padding: const EdgeInsets.symmetric(
@@ -1833,6 +1841,14 @@ class _OcrFormPageState extends State<OcrFormPage> {
     );
   }
 
+  Future<void> _copyRawText() async {
+    await Clipboard.setData(ClipboardData(text: _rawText));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('تم نسخ النص')),
+    );
+  }
+
   Widget _buildRawCard(ThemeData theme) {
     return Card(
       elevation: 0,
@@ -1841,18 +1857,41 @@ class _OcrFormPageState extends State<OcrFormPage> {
         borderRadius: BorderRadius.circular(20),
         side: BorderSide(color: theme.colorScheme.outlineVariant),
       ),
-      child: ExpansionTile(
-        leading: const Icon(Icons.text_snippet_rounded),
-        title: const Text('النص المستخرج من الصورة (OCR)'),
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: SelectableText(
-              _rawText,
-              textDirection: TextDirection.rtl,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.text_snippet_rounded),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'النص المستخرج من الصورة',
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _copyRawText,
+                  icon: const Icon(Icons.copy_rounded, size: 18),
+                  label: const Text('نسخ النص'),
+                ),
+              ],
             ),
-          ),
-        ],
+            const SizedBox(height: 12),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 320),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  _rawText,
+                  textDirection: TextDirection.rtl,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
